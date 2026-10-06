@@ -1,0 +1,49 @@
+name: Build and Deploy to GKE
+on:
+  push:
+    branches: [gcp]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  PROJECT_ID: fiserve-poc-dev
+  REGION: us-central1
+  CLUSTER: testcluster1
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/230117074304/locations/global/workloadIdentityPools/github-pool/providers/github-provider
+          service_account: github-deployer@fiserve-poc-dev.iam.gserviceaccount.com
+
+      - uses: google-github-actions/setup-gcloud@v2
+        with:
+          install_components: gke-gcloud-auth-plugin
+
+      - name: Build and push image
+        run: |
+          gcloud auth configure-docker ${REGION}-docker.pkg.dev --quiet
+          IMG=${REGION}-docker.pkg.dev/${PROJECT_ID}/apps/demo-web:${GITHUB_SHA}
+          docker build -t $IMG .
+          docker push $IMG
+          echo "IMG=$IMG" >> $GITHUB_ENV
+
+      - uses: google-github-actions/get-gke-credentials@v2
+        with:
+          cluster_name: ${{ env.CLUSTER }}
+          location: ${{ env.REGION }}
+
+      - name: Deploy
+        run: |
+          sed -i "s|IMAGE_PLACEHOLDER|${IMG}|" k8s/deployment.yaml
+          kubectl apply -f k8s/
+          kubectl rollout status deployment/demo-web --timeout=180s
+          kubectl get svc demo-web
